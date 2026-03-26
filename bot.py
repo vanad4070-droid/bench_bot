@@ -7,7 +7,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-# ==================== НАСТРОЙКИ ====================
+
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 
 if not TOKEN:
@@ -21,12 +21,12 @@ if USE_PROXY:
     request = HTTPXRequest(proxy_url=PROXY_URL)
 else:
     request = HTTPXRequest()
-# ===================================================
+
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
-# ==================== КЛАВИАТУРА (кнопки) ====================
+
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("🏋️ Программа"), KeyboardButton("📊 Прогресс")],
@@ -42,7 +42,7 @@ def get_after_log_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ==================== БАЗА ДАННЫХ ====================
+
 def init_db():
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
@@ -132,7 +132,7 @@ def get_last_workout():
     conn.close()
     return result if result else None
 
-# ==================== КОМАНДЫ ====================
+
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "🏋️‍♂️ *Твой силовой тренер*\n\n👇 Нажми на кнопку, чтобы выбрать действие:",
@@ -296,7 +296,7 @@ async def handle_text(update: Update, context: CallbackContext):
     elif text == "ℹ️ Помощь":
         await help_command(update, context)
 
-# ==================== ЗАПУСК ====================
+
 def main():
     if USE_PROXY:
         app = Application.builder().token(TOKEN).request(request).build()
