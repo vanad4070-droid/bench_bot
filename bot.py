@@ -23,23 +23,41 @@ else:
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
-# Состояния для ConversationHandler
-WAITING_FOR_LOG = 1
-WAITING_FOR_TARGET = 2
-WAITING_FOR_EXERCISE_NAME = 3
-WAITING_FOR_EXERCISE_DETAILS = 4
-WAITING_FOR_EDIT_SELECT = 5
-WAITING_FOR_EDIT_WEIGHT = 6
-WAITING_FOR_EDIT_REPS_SETS = 7
-WAITING_FOR_DELETE_SELECT = 8
+# Состояния
+WAITING_FOR_BODYWEIGHT = 1
+WAITING_FOR_BENCH = 2
+WAITING_FOR_LEGPRESS = 3
+WAITING_FOR_SQUAT = 4
+WAITING_FOR_LOG = 10
+WAITING_FOR_TARGET = 11
+WAITING_FOR_EXERCISE_NAME = 12
+WAITING_FOR_EXERCISE_DETAILS = 13
+WAITING_FOR_EDIT_SELECT = 14
+WAITING_FOR_EDIT_WEIGHT = 15
+WAITING_FOR_EDIT_REPS_SETS = 16
+WAITING_FOR_DELETE_SELECT = 17
+WAITING_FOR_CUSTOM_EXERCISE_NAME = 18
+WAITING_FOR_CUSTOM_EXERCISE_VALUE = 19
+WAITING_FOR_TARGET_SELECT = 20
+WAITING_FOR_TARGET_VALUE = 21
+WAITING_FOR_PROGRESS_SELECT = 22
 
 # ==================== КНОПКИ ====================
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("🏋️ Моя программа"), KeyboardButton("📊 Мой прогресс")],
-        [KeyboardButton("📈 График"), KeyboardButton("🎯 Цель")],
-        [KeyboardButton("📝 Записать тренировку"), KeyboardButton("✏️ Управление программой")],
-        [KeyboardButton("ℹ️ Помощь")]
+        [KeyboardButton("📈 График"), KeyboardButton("🎯 Мои цели")],
+        [KeyboardButton("📝 Записать тренировку"), KeyboardButton("⚙️ Мои показатели")],
+        [KeyboardButton("✏️ Управление программой"), KeyboardButton("ℹ️ Помощь")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_stats_keyboard():
+    keyboard = [
+        [KeyboardButton("📊 Посмотреть показатели")],
+        [KeyboardButton("✏️ Редактировать показатель")],
+        [KeyboardButton("➕ Добавить свой показатель")],
+        [KeyboardButton("🔙 Назад")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -63,7 +81,13 @@ def get_after_log_keyboard():
 def init_db():
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
-    # Таблица для упражнений программы
+    c.execute('''CREATE TABLE IF NOT EXISTS user_stats
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  stat_name TEXT,
+                  current_value REAL,
+                  updated_date TEXT,
+                  UNIQUE(user_id, stat_name))''')
     c.execute('''CREATE TABLE IF NOT EXISTS program
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -72,7 +96,6 @@ def init_db():
                   reps INTEGER,
                   sets INTEGER,
                   order_num INTEGER)''')
-    # Таблица для тренировок (связь с упражнением)
     c.execute('''CREATE TABLE IF NOT EXISTS workouts
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
@@ -81,13 +104,16 @@ def init_db():
                   weight REAL,
                   reps INTEGER,
                   sets INTEGER)''')
-    # Таблица для целей
     c.execute('''CREATE TABLE IF NOT EXISTS goals
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
                   target_weight REAL,
-                  exercise_name TEXT,
+                  stat_name TEXT,
                   set_date TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_profile
+                 (user_id INTEGER PRIMARY KEY,
+                  is_onboarded INTEGER DEFAULT 0,
+                  onboarded_date TEXT)''')
     conn.commit()
     conn.close()
 
@@ -95,6 +121,55 @@ init_db()
 
 def get_user_id(update):
     return update.effective_user.id
+
+def is_onboarded(user_id):
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    c.execute("SELECT is_onboarded FROM user_profile WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result and result[0] == 1
+
+def set_onboarded(user_id):
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    date = datetime.now().strftime("%Y-%m-%d")
+    c.execute("INSERT OR REPLACE INTO user_profile (user_id, is_onboarded, onboarded_date) VALUES (?, 1, ?)",
+              (user_id, date))
+    conn.commit()
+    conn.close()
+
+def save_user_stat(user_id, stat_name, value):
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    c.execute("INSERT OR REPLACE INTO user_stats (user_id, stat_name, current_value, updated_date) VALUES (?, ?, ?, ?)",
+              (user_id, stat_name, value, date))
+    conn.commit()
+    conn.close()
+
+def get_user_stats(user_id):
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    c.execute("SELECT stat_name, current_value, updated_date FROM user_stats WHERE user_id = ? ORDER BY stat_name", (user_id,))
+    data = c.fetchall()
+    conn.close()
+    return data
+
+def get_user_stat(user_id, stat_name):
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    c.execute("SELECT current_value FROM user_stats WHERE user_id = ? AND stat_name = ?", (user_id, stat_name))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def delete_user_stat(user_id, stat_name):
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM user_stats WHERE user_id = ? AND stat_name = ?", (user_id, stat_name))
+    conn.commit()
+    conn.close()
 
 def get_program(user_id):
     conn = sqlite3.connect('training.db')
@@ -133,7 +208,6 @@ def delete_exercise(user_id, order_num):
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
     c.execute("DELETE FROM program WHERE user_id = ? AND order_num = ?", (user_id, order_num))
-    # Перенумеруем оставшиеся
     c.execute("SELECT id, order_num FROM program WHERE user_id = ? ORDER BY order_num", (user_id,))
     exercises = c.fetchall()
     for i, (id_, old_order) in enumerate(exercises):
@@ -159,22 +233,14 @@ def get_workouts(user_id, exercise_name):
     conn.close()
     return data
 
-def get_all_workouts(user_id):
-    conn = sqlite3.connect('training.db')
-    c = conn.cursor()
-    c.execute("SELECT exercise_name, date, weight, reps, sets FROM workouts WHERE user_id = ? ORDER BY date", (user_id,))
-    data = c.fetchall()
-    conn.close()
-    return data
-
 def calculate_1rm(weight, reps, sets):
     if sets >= 4 and reps >= 4:
         return round(weight * 1.2, 1)
     else:
         return round(weight / (1.0278 - 0.0278 * reps), 1)
 
-def create_chart(user_id, exercise_name):
-    data = get_workouts(user_id, exercise_name)
+def create_chart(user_id, stat_name):
+    data = get_workouts(user_id, stat_name)
     if not data:
         return None
     dates = []
@@ -186,7 +252,7 @@ def create_chart(user_id, exercise_name):
             weights.append(row[1])
     plt.figure(figsize=(10, 5))
     plt.plot(dates, weights, marker='o', linewidth=2, color='blue')
-    plt.title(f'Динамика: {exercise_name}', fontsize=16)
+    plt.title(f'Динамика: {stat_name}', fontsize=16)
     plt.xlabel('Дата', fontsize=12)
     plt.ylabel('Вес (кг)', fontsize=12)
     plt.grid(True, alpha=0.3)
@@ -196,21 +262,21 @@ def create_chart(user_id, exercise_name):
     plt.close()
     return 'progress.png'
 
-def set_goal(user_id, exercise_name, weight):
+def set_goal(user_id, stat_name, weight):
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
     date = datetime.now().strftime("%Y-%m-%d")
-    c.execute("DELETE FROM goals WHERE user_id = ? AND exercise_name = ?", (user_id, exercise_name))
-    c.execute("INSERT INTO goals (user_id, target_weight, exercise_name, set_date) VALUES (?, ?, ?, ?)", 
-              (user_id, weight, exercise_name, date))
+    c.execute("DELETE FROM goals WHERE user_id = ? AND stat_name = ?", (user_id, stat_name))
+    c.execute("INSERT INTO goals (user_id, target_weight, stat_name, set_date) VALUES (?, ?, ?, ?)", 
+              (user_id, weight, stat_name, date))
     conn.commit()
     conn.close()
 
-def get_goal(user_id, exercise_name):
+def get_goal(user_id, stat_name):
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
-    c.execute("SELECT target_weight FROM goals WHERE user_id = ? AND exercise_name = ? ORDER BY id DESC LIMIT 1", 
-              (user_id, exercise_name))
+    c.execute("SELECT target_weight FROM goals WHERE user_id = ? AND stat_name = ? ORDER BY id DESC LIMIT 1", 
+              (user_id, stat_name))
     result = c.fetchone()
     conn.close()
     return result[0] if result else None
@@ -224,28 +290,358 @@ def get_last_workout(user_id, exercise_name):
     conn.close()
     return result if result else None
 
-# ==================== КОМАНДЫ ====================
-async def start(update: Update, context: CallbackContext):
-    user_id = get_user_id(update)
-    program = get_program(user_id)
-    
-    if not program:
-        await update.message.reply_text(
-            "🏋️‍♂️ *Добро пожаловать в силовой тренер!*\n\n"
-            "📭 *Твоя программа пуста*\n\n"
-            "Нажми *✏️ Управление программой* → *➕ Добавить упражнение*\n\n"
-            "👇 Нажми на кнопку:",
-            parse_mode='Markdown',
-            reply_markup=get_main_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            "🏋️‍♂️ *Твой силовой тренер*\n\n"
-            "👇 Нажми на кнопку:",
-            parse_mode='Markdown',
-            reply_markup=get_main_keyboard()
-        )
+# ==================== АНКЕТА ====================
+async def onboard_user(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "🏋️‍♂️ *Давай познакомимся!*\n\n"
+        "Я помогу тебе отслеживать прогресс и достигать целей.\n\n"
+        "Для начала укажи свой *вес тела (кг)*:",
+        parse_mode='Markdown'
+    )
+    return WAITING_FOR_BODYWEIGHT
 
+async def get_bodyweight(update: Update, context: CallbackContext):
+    try:
+        bodyweight = float(update.message.text)
+        user_id = get_user_id(update)
+        save_user_stat(user_id, "Вес тела", bodyweight)
+        context.user_data['onboard'] = {}
+        await update.message.reply_text(
+            f"✅ Вес тела: {bodyweight} кг\n\n"
+            "Теперь укажи свой *жим лёжа (на раз, кг)*:",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_BENCH
+    except:
+        await update.message.reply_text("❌ Введи число, например: `70`", parse_mode='Markdown')
+        return WAITING_FOR_BODYWEIGHT
+
+async def get_bench(update: Update, context: CallbackContext):
+    try:
+        bench = float(update.message.text)
+        user_id = get_user_id(update)
+        save_user_stat(user_id, "Жим лёжа", bench)
+        await update.message.reply_text(
+            f"✅ Жим лёжа: {bench} кг\n\n"
+            "Теперь укажи свой *жим ногами (на раз, кг)*:",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_LEGPRESS
+    except:
+        await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
+        return WAITING_FOR_BENCH
+
+async def get_legpress(update: Update, context: CallbackContext):
+    try:
+        legpress = float(update.message.text)
+        user_id = get_user_id(update)
+        save_user_stat(user_id, "Жим ногами", legpress)
+        await update.message.reply_text(
+            f"✅ Жим ногами: {legpress} кг\n\n"
+            "Теперь укажи свой *присед со штангой (на раз, кг)*:",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_SQUAT
+    except:
+        await update.message.reply_text("❌ Введи число, например: `80`", parse_mode='Markdown')
+        return WAITING_FOR_LEGPRESS
+
+async def get_squat(update: Update, context: CallbackContext):
+    try:
+        squat = float(update.message.text)
+        user_id = get_user_id(update)
+        save_user_stat(user_id, "Присед", squat)
+        set_onboarded(user_id)
+        
+        await update.message.reply_text(
+            f"✅ *Анкета заполнена!*\n\n"
+            f"📊 *Твои показатели:*\n"
+            f"• Вес тела: {get_user_stat(user_id, 'Вес тела')} кг\n"
+            f"• Жим лёжа: {get_user_stat(user_id, 'Жим лёжа')} кг\n"
+            f"• Жим ногами: {get_user_stat(user_id, 'Жим ногами')} кг\n"
+            f"• Присед: {get_user_stat(user_id, 'Присед')} кг\n\n"
+            "Теперь можешь:\n"
+            "• Создать программу тренировок\n"
+            "• Отслеживать прогресс\n"
+            "• Ставить цели\n\n"
+            "👇 Нажми на кнопку:",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Введи число, например: `80`", parse_mode='Markdown')
+        return WAITING_FOR_SQUAT
+
+# ==================== ПОКАЗАТЕЛИ ====================
+async def show_stats(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await update.message.reply_text(
+            "📭 *Показатели не найдены*\n\n"
+            "Нажми *⚙️ Мои показатели* → *➕ Добавить свой показатель*",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    text = "📊 *Мои показатели:*\n\n"
+    for stat_name, value, date in stats:
+        goal = get_goal(user_id, stat_name)
+        text += f"• *{stat_name}*: {value} кг"
+        if goal:
+            text += f" (цель: {goal} кг)"
+        text += f"\n   📅 {date[:10]}\n\n"
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_stats_keyboard())
+
+async def edit_stat_select(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await update.message.reply_text("📭 Нет показателей для редактирования", reply_markup=get_main_keyboard())
+        return
+    
+    text = "✏️ *Какой показатель редактировать?*\n\n"
+    buttons = []
+    for stat_name, value, date in stats:
+        buttons.append([InlineKeyboardButton(f"✏️ {stat_name}", callback_data=f"edit_stat_{stat_name}")])
+    buttons.append([InlineKeyboardButton("➕ Добавить новый", callback_data="add_stat")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_stats")])
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
+
+async def edit_stat_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("edit_stat_"):
+        stat_name = query.data.replace("edit_stat_", "")
+        context.user_data['edit_stat'] = stat_name
+        await query.message.reply_text(
+            f"✏️ *{stat_name}*\n\n"
+            f"Текущее значение: {get_user_stat(query.from_user.id, stat_name)} кг\n\n"
+            "Введи новое значение (кг):",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_EDIT_WEIGHT
+    elif query.data == "add_stat":
+        await query.message.reply_text(
+            "➕ *Добавить свой показатель*\n\n"
+            "Введи название показателя\n"
+            "Например: `Становая тяга`\n\n"
+            "Для отмены введи /cancel",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_CUSTOM_EXERCISE_NAME
+    elif query.data == "back_to_stats":
+        await query.message.reply_text("🔙 Назад", reply_markup=get_stats_keyboard())
+        return ConversationHandler.END
+
+async def edit_stat_value(update: Update, context: CallbackContext):
+    try:
+        new_value = float(update.message.text)
+        user_id = get_user_id(update)
+        stat_name = context.user_data['edit_stat']
+        save_user_stat(user_id, stat_name, new_value)
+        
+        await update.message.reply_text(
+            f"✅ *{stat_name}* обновлён! Новое значение: {new_value} кг",
+            parse_mode='Markdown',
+            reply_markup=get_stats_keyboard()
+        )
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
+        return WAITING_FOR_EDIT_WEIGHT
+
+async def add_custom_stat(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "➕ *Добавить свой показатель*\n\n"
+        "Введи название показателя\n"
+        "Например: `Становая тяга` или `Тяга штанги`\n\n"
+        "Для отмены введи /cancel",
+        parse_mode='Markdown'
+    )
+    return WAITING_FOR_CUSTOM_EXERCISE_NAME
+
+async def get_custom_stat_name(update: Update, context: CallbackContext):
+    name = update.message.text
+    context.user_data['custom_stat'] = {'name': name}
+    await update.message.reply_text(
+        f"📝 *{name}*\n\n"
+        "Введи текущее значение (кг):\n"
+        "Например: `100`",
+        parse_mode='Markdown'
+    )
+    return WAITING_FOR_CUSTOM_EXERCISE_VALUE
+
+async def get_custom_stat_value(update: Update, context: CallbackContext):
+    try:
+        value = float(update.message.text)
+        user_id = get_user_id(update)
+        name = context.user_data['custom_stat']['name']
+        save_user_stat(user_id, name, value)
+        
+        await update.message.reply_text(
+            f"✅ *{name}* добавлен! Текущее значение: {value} кг",
+            parse_mode='Markdown',
+            reply_markup=get_stats_keyboard()
+        )
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
+        return WAITING_FOR_CUSTOM_EXERCISE_VALUE
+
+# ==================== ЦЕЛИ ====================
+async def show_goals(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await update.message.reply_text(
+            "📭 *Нет показателей*\n\n"
+            "Сначала добавь показатели в *⚙️ Мои показатели*",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    text = "🎯 *Мои цели:*\n\n"
+    for stat_name, value, date in stats:
+        goal = get_goal(user_id, stat_name)
+        if goal:
+            remaining = goal - value
+            text += f"• *{stat_name}*: {value} кг → цель {goal} кг"
+            if remaining > 0:
+                text += f" (осталось {remaining:.1f} кг)\n"
+            else:
+                text += f" ✅ Достигнута!\n"
+        else:
+            text += f"• *{stat_name}*: {value} кг → цель не установлена\n"
+    
+    text += "\nУстановить цель: нажми *🎯 Мои цели* снова"
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+
+async def set_goal_select(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await update.message.reply_text("📭 Нет показателей", reply_markup=get_main_keyboard())
+        return
+    
+    text = "🎯 *Для какого показателя установить цель?*\n\n"
+    buttons = []
+    for stat_name, value, date in stats:
+        buttons.append([InlineKeyboardButton(f"🎯 {stat_name} (сейчас {value} кг)", callback_data=f"set_goal_{stat_name}")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
+    return WAITING_FOR_TARGET_SELECT
+
+async def goal_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("set_goal_"):
+        stat_name = query.data.replace("set_goal_", "")
+        context.user_data['goal_stat'] = stat_name
+        await query.message.reply_text(
+            f"🎯 *{stat_name}*\n\n"
+            f"Текущее значение: {get_user_stat(query.from_user.id, stat_name)} кг\n\n"
+            "Введи целевую цифру (кг):\n"
+            "Например: `100`",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_TARGET_VALUE
+    elif query.data == "back_to_menu":
+        await query.message.reply_text("🔙 Возврат", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+async def set_goal_value(update: Update, context: CallbackContext):
+    try:
+        target = float(update.message.text)
+        user_id = get_user_id(update)
+        stat_name = context.user_data['goal_stat']
+        set_goal(user_id, stat_name, target)
+        
+        current = get_user_stat(user_id, stat_name)
+        await update.message.reply_text(
+            f"✅ *Цель установлена!*\n\n"
+            f"• {stat_name}: {current} кг → {target} кг\n"
+            f"💪 Осталось: {target - current:.1f} кг",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
+        return WAITING_FOR_TARGET_VALUE
+
+# ==================== ПРОГРЕСС ====================
+async def show_progress(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await update.message.reply_text(
+            "📭 *Нет данных*\n\n"
+            "Сначала заполни анкету и записывай тренировки",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    text = "📊 *Мой прогресс:*\n\n"
+    for stat_name, value, date in stats:
+        last = get_last_workout(user_id, stat_name)
+        if last:
+            one_rm = calculate_1rm(last[0], last[1], last[2])
+            text += f"• *{stat_name}*: последний результат {last[0]} кг × {last[2]}×{last[1]} → 1ПМ = {one_rm} кг\n"
+        else:
+            text += f"• *{stat_name}*: {value} кг (начальный)\n"
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+
+async def show_chart_select(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    stats = get_user_stats(user_id)
+    
+    if not stats:
+        await update.message.reply_text("📭 Нет данных", reply_markup=get_main_keyboard())
+        return
+    
+    text = "📈 *График для какого показателя?*\n\n"
+    buttons = []
+    for stat_name, value, date in stats:
+        buttons.append([InlineKeyboardButton(f"📈 {stat_name}", callback_data=f"chart_{stat_name}")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+    
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
+    return WAITING_FOR_PROGRESS_SELECT
+
+async def chart_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("chart_"):
+        stat_name = query.data.replace("chart_", "")
+        await query.message.reply_text(f"📊 Строю график для *{stat_name}*...", parse_mode='Markdown')
+        chart_file = create_chart(query.from_user.id, stat_name)
+        if chart_file:
+            with open(chart_file, 'rb') as f:
+                await query.message.reply_photo(f, caption=f"📈 Динамика: {stat_name}", reply_markup=get_main_keyboard())
+        else:
+            await query.message.reply_text(f"❌ Недостаточно данных для {stat_name}", reply_markup=get_main_keyboard())
+    elif query.data == "back_to_menu":
+        await query.message.reply_text("🔙 Возврат", reply_markup=get_main_keyboard())
+
+# ==================== ПРОГРАММА ТРЕНИРОВОК ====================
 async def show_program(update: Update, context: CallbackContext):
     user_id = get_user_id(update)
     program = get_program(user_id)
@@ -265,7 +661,6 @@ async def show_program(update: Update, context: CallbackContext):
     
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
 
-# ==================== УПРАВЛЕНИЕ ПРОГРАММОЙ ====================
 async def program_management(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "✏️ *Управление программой*\n\n"
@@ -320,60 +715,235 @@ async def get_exercise_details(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Ошибка. Пример: `65 5 5`", parse_mode='Markdown')
         return WAITING_FOR_EXERCISE_DETAILS
 
-async def edit_exercise_select(update: Update, context: CallbackContext):
-    user_id = get_user_id(update)
-    program = get_program(user_id)
-    
-    if not program:
-        await update.message.reply_text("📭 Программа пуста. Сначала добавь упражнения", reply_markup=get_main_keyboard())
-        return ConversationHandler.END
-    
-    text = "✏️ *Какое упражнение редактировать?*\n\n"
-    buttons = []
-    for i, (name, weight, reps, sets, order) in enumerate(program, 1):
-        text += f"{i}. {name} — {weight} кг × {sets}×{reps}\n"
-        buttons.append([InlineKeyboardButton(f"✏️ {name}", callback_data=f"edit_{order}")])
-    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_management")])
-    
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
-    return WAITING_FOR_EDIT_SELECT
+# ==================== ЗАПИСЬ ТРЕНИРОВКИ ====================
+async def start_log(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "📝 *Запись тренировки*\n\n"
+        "Введи: *название, вес, повторы, подходы*\n"
+        "Например: `Жим лёжа 65 5 5`\n\n"
+        "Для отмены введи /cancel",
+        parse_mode='Markdown'
+    )
+    return WAITING_FOR_LOG
 
-async def edit_callback(update: Update, context: CallbackContext):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data.startswith("edit_"):
-        order_num = int(query.data.split("_")[1])
-        context.user_data['edit_order'] = order_num
+async def handle_log(update: Update, context: CallbackContext):
+    try:
+        parts = update.message.text.split()
+        if len(parts) < 4:
+            await update.message.reply_text("❌ Нужно 4 параметра. Пример: `Жим лёжа 65 5 5`", parse_mode='Markdown')
+            return WAITING_FOR_LOG
         
-        program = get_program(query.from_user.id)
-        exercise = None
-        for name, weight, reps, sets, order in program:
-            if order == order_num:
-                exercise = (name, weight, reps, sets)
-                break
+        # Если название из нескольких слов
+        exercise_name = parts[0]
+        if len(parts) > 4:
+            exercise_name = " ".join(parts[:-3])
+            weight = float(parts[-3])
+            reps = int(parts[-2])
+            sets = int(parts[-1])
+        else:
+            weight = float(parts[1])
+            reps = int(parts[2])
+            sets = int(parts[3])
         
-        if exercise:
-            keyboard = [
-                [InlineKeyboardButton("🏋️ Изменить вес", callback_data=f"edit_weight_{order_num}")],
-                [InlineKeyboardButton("📊 Изменить повторы/подходы", callback_data=f"edit_reps_{order_num}")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_edit")]
-            ]
-            await query.message.reply_text(
-                f"✏️ *{exercise[0]}*\n\n"
-                f"Текущий вес: {exercise[1]} кг\n"
-                f"Текущая схема: {exercise[3]}×{exercise[2]}\n\n"
-                f"Что хочешь изменить?",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        return WAITING_FOR_EDIT_SELECT
+        user_id = get_user_id(update)
+        save_workout(user_id, exercise_name, weight, reps, sets)
+        one_rm = calculate_1rm(weight, reps, sets)
+        
+        # Обновляем показатель в статистике
+        current = get_user_stat(user_id, exercise_name)
+        if not current or weight > current:
+            save_user_stat(user_id, exercise_name, weight)
+        
+        goal = get_goal(user_id, exercise_name)
+        goal_text = ""
+        if goal:
+            remaining = goal - one_rm
+            if remaining > 0:
+                goal_text = f"\n🎯 До цели {goal} кг осталось: {remaining:.1f} кг"
+            else:
+                goal_text = f"\n🎉 Поздравляю! Ты достиг цели {goal} кг!"
+        
+        await update.message.reply_text(
+            f"✅ *Записано:* {exercise_name} — {weight} кг × {sets}×{reps}\n"
+            f"📈 Расчётный максимум (1ПМ): *{one_rm} кг*{goal_text}",
+            parse_mode='Markdown',
+            reply_markup=get_after_log_keyboard()
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка. Пример: `Жим лёжа 65 5 5`", parse_mode='Markdown')
+        return WAITING_FOR_LOG
+
+# ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
+async def next_weight_command(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "📈 *Следующий вес*\n\n"
+        "Сначала запиши тренировку, чтобы я мог рассчитать следующий вес",
+        parse_mode='Markdown',
+        reply_markup=get_main_keyboard()
+    )
+
+async def help_command(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "🏋️‍♂️ *Помощь*\n\n"
+        "📋 *Основные команды:*\n"
+        "/start — начать работу\n"
+        "/program — показать программу\n"
+        "/log — записать тренировку\n"
+        "/progress — прогресс\n"
+        "/chart — график\n"
+        "/stats — мои показатели\n"
+        "/goals — мои цели\n"
+        "/help — помощь\n\n"
+        "👇 Или нажимай на кнопки внизу экрана!",
+        parse_mode='Markdown',
+        reply_markup=get_main_keyboard()
+    )
+
+async def cancel(update: Update, context: CallbackContext):
+    await update.message.reply_text("❌ Действие отменено", reply_markup=get_main_keyboard())
+    return ConversationHandler.END
+
+async def handle_text(update: Update, context: CallbackContext):
+    text = update.message.text
     
-    elif query.data.startswith("edit_weight_"):
-        order_num = int(query.data.split("_")[2])
-        context.user_data['edit_order'] = order_num
-        await query.message.reply_text("🏋️ *Введи новый вес (кг):*", parse_mode='Markdown')
-        return WAITING_FOR_EDIT_WEIGHT
+    if text == "🏋️ Моя программа":
+        await show_program(update, context)
+    elif text == "📊 Мой прогресс":
+        await show_progress(update, context)
+    elif text == "📈 График":
+        await show_chart_select(update, context)
+    elif text == "🎯 Мои цели":
+        await show_goals(update, context)
+    elif text == "📝 Записать тренировку":
+        await start_log(update, context)
+    elif text == "⚙️ Мои показатели":
+        await show_stats(update, context)
+    elif text == "✏️ Управление программой":
+        await program_management(update, context)
+    elif text == "➕ Добавить упражнение":
+        await add_exercise_start(update, context)
+    elif text == "📊 Посмотреть показатели":
+        await show_stats(update, context)
+    elif text == "✏️ Редактировать показатель":
+        await edit_stat_select(update, context)
+    elif text == "➕ Добавить свой показатель":
+        await add_custom_stat(update, context)
+    elif text == "🔙 Назад":
+        await update.message.reply_text("🔙 Возврат в главное меню", reply_markup=get_main_keyboard())
+    elif text == "ℹ️ Помощь":
+        await help_command(update, context)
+
+# ==================== ЗАПУСК ====================
+def main():
+    app = Application.builder().token(TOKEN).request(request).build()
     
-    elif query.data:
+    # ConversationHandler для анкеты
+    onboard_conv = ConversationHandler(
+        entry_points=[CommandHandler("start", onboard_user)],
+        states={
+            WAITING_FOR_BODYWEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_bodyweight)],
+            WAITING_FOR_BENCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_bench)],
+            WAITING_FOR_LEGPRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_legpress)],
+            WAITING_FOR_SQUAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_squat)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
     
+    # ConversationHandler для добавления упражнения в программу
+    add_exercise_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("add_exercise", add_exercise_start),
+            MessageHandler(filters.Regex("^➕ Добавить упражнение$"), add_exercise_start)
+        ],
+        states={
+            WAITING_FOR_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_name)],
+            WAITING_FOR_EXERCISE_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_details)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    # ConversationHandler для записи тренировки
+    log_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("log", start_log),
+            MessageHandler(filters.Regex("^📝 Записать тренировку$"), start_log),
+            MessageHandler(filters.Regex("^📝 Записать ещё$"), start_log)
+        ],
+        states={
+            WAITING_FOR_LOG: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_log)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    # ConversationHandler для добавления своего показателя
+    add_stat_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("add_stat", add_custom_stat),
+            MessageHandler(filters.Regex("^➕ Добавить свой показатель$"), add_custom_stat)
+        ],
+        states={
+            WAITING_FOR_CUSTOM_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_stat_name)],
+            WAITING_FOR_CUSTOM_EXERCISE_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_stat_value)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    # ConversationHandler для установки цели
+    set_goal_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("set_goal", set_goal_select),
+            MessageHandler(filters.Regex("^🎯 Мои цели$"), set_goal_select)
+        ],
+        states={
+            WAITING_FOR_TARGET_SELECT: [CallbackQueryHandler(goal_callback)],
+            WAITING_FOR_TARGET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_goal_value)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    # ConversationHandler для графика
+    chart_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("chart", show_chart_select),
+            MessageHandler(filters.Regex("^📈 График$"), show_chart_select)
+        ],
+        states={
+            WAITING_FOR_PROGRESS_SELECT: [CallbackQueryHandler(chart_callback)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    # ConversationHandler для редактирования показателей
+    edit_stat_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("^✏️ Редактировать показатель$"), edit_stat_select)
+        ],
+        states={
+            WAITING_FOR_EDIT_SELECT: [CallbackQueryHandler(edit_stat_callback)],
+            WAITING_FOR_EDIT_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_stat_value)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
+    app.add_handler(onboard_conv)
+    app.add_handler(add_exercise_conv)
+    app.add_handler(log_conv)
+    app.add_handler(add_stat_conv)
+    app.add_handler(set_goal_conv)
+    app.add_handler(chart_conv)
+    app.add_handler(edit_stat_conv)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("program", show_program))
+    app.add_handler(CommandHandler("progress", show_progress))
+    app.add_handler(CommandHandler("stats", show_stats))
+    app.add_handler(CommandHandler("goals", show_goals))
+    app.add_handler(CommandHandler("next", next_weight_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    print("🤖 Бот запущен! Напиши /start в Телеграме")
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
