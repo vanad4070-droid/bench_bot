@@ -375,5 +375,5 @@ async def edit_callback(update: Update, context: CallbackContext):
         await query.message.reply_text("🏋️ *Введи новый вес (кг):*", parse_mode='Markdown')
         return WAITING_FOR_EDIT_WEIGHT
     
-    elif query.data
+    elif query.data:
     
