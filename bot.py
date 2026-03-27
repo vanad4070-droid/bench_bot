@@ -29,13 +29,10 @@ WAITING_FOR_BENCH = 2
 WAITING_FOR_LEGPRESS = 3
 WAITING_FOR_SQUAT = 4
 WAITING_FOR_LOG = 10
-WAITING_FOR_TARGET = 11
 WAITING_FOR_EXERCISE_NAME = 12
 WAITING_FOR_EXERCISE_DETAILS = 13
 WAITING_FOR_EDIT_SELECT = 14
 WAITING_FOR_EDIT_WEIGHT = 15
-WAITING_FOR_EDIT_REPS_SETS = 16
-WAITING_FOR_DELETE_SELECT = 17
 WAITING_FOR_CUSTOM_EXERCISE_NAME = 18
 WAITING_FOR_CUSTOM_EXERCISE_VALUE = 19
 WAITING_FOR_TARGET_SELECT = 20
@@ -64,8 +61,6 @@ def get_stats_keyboard():
 def get_program_management_keyboard():
     keyboard = [
         [KeyboardButton("➕ Добавить упражнение")],
-        [KeyboardButton("✏️ Редактировать упражнение")],
-        [KeyboardButton("➖ Удалить упражнение")],
         [KeyboardButton("🔙 Назад")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -192,15 +187,6 @@ def save_workout(user_id, exercise_name, weight, reps, sets):
     conn.commit()
     conn.close()
 
-def get_workouts(user_id, exercise_name):
-    conn = sqlite3.connect('training.db')
-    c = conn.cursor()
-    c.execute("SELECT date, weight, reps, sets FROM workouts WHERE user_id = ? AND exercise_name = ? ORDER BY date", 
-              (user_id, exercise_name))
-    data = c.fetchall()
-    conn.close()
-    return data
-
 def calculate_1rm(weight, reps, sets):
     if sets >= 4 and reps >= 4:
         return round(weight * 1.2, 1)
@@ -208,7 +194,11 @@ def calculate_1rm(weight, reps, sets):
         return round(weight / (1.0278 - 0.0278 * reps), 1)
 
 def create_chart(user_id, stat_name):
-    data = get_workouts(user_id, stat_name)
+    conn = sqlite3.connect('training.db')
+    c = conn.cursor()
+    c.execute("SELECT date, weight FROM workouts WHERE user_id = ? AND exercise_name = ? ORDER BY date", (user_id, stat_name))
+    data = c.fetchall()
+    conn.close()
     if not data:
         return None
     dates = []
@@ -264,8 +254,7 @@ async def start(update: Update, context: CallbackContext):
     
     if is_onboarded(user_id):
         await update.message.reply_text(
-            "🏋️‍♂️ *С возвращением!*\n\n"
-            "👇 Нажми на кнопку:",
+            "🏋️‍♂️ *С возвращением!*\n\n👇 Нажми на кнопку:",
             parse_mode='Markdown',
             reply_markup=get_main_keyboard()
         )
@@ -276,8 +265,7 @@ async def start(update: Update, context: CallbackContext):
 async def onboard_user(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "🏋️‍♂️ *Давай познакомимся!*\n\n"
-        "Я помогу тебе отслеживать прогресс и достигать целей.\n\n"
-        "Для начала укажи свой *вес тела (кг)*:",
+        "Укажи свой *вес тела (кг)*:",
         parse_mode='Markdown'
     )
     return WAITING_FOR_BODYWEIGHT
@@ -341,10 +329,6 @@ async def get_squat(update: Update, context: CallbackContext):
             f"• Жим лёжа: {get_user_stat(user_id, 'Жим лёжа')} кг\n"
             f"• Жим ногами: {get_user_stat(user_id, 'Жим ногами')} кг\n"
             f"• Присед: {get_user_stat(user_id, 'Присед')} кг\n\n"
-            "Теперь можешь:\n"
-            "• Создать программу тренировок\n"
-            "• Отслеживать прогресс\n"
-            "• Ставить цели\n\n"
             "👇 Нажми на кнопку:",
             parse_mode='Markdown',
             reply_markup=get_main_keyboard()
@@ -383,42 +367,32 @@ async def edit_stat_select(update: Update, context: CallbackContext):
     stats = get_user_stats(user_id)
     
     if not stats:
-        await update.message.reply_text("📭 Нет показателей для редактирования", reply_markup=get_main_keyboard())
+        await update.message.reply_text("📭 Нет показателей", reply_markup=get_main_keyboard())
         return
     
     text = "✏️ *Какой показатель редактировать?*\n\n"
     buttons = []
     for stat_name, value, date in stats:
-        buttons.append([InlineKeyboardButton(f"✏️ {stat_name}", callback_data=f"edit_stat_{stat_name}")])
-    buttons.append([InlineKeyboardButton("➕ Добавить новый", callback_data="add_stat")])
-    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_stats")])
+        buttons.append([InlineKeyboardButton(f"✏️ {stat_name}", callback_data=f"edit_{stat_name}")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_stats")])
     
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
 
-async def edit_stat_callback(update: Update, context: CallbackContext):
+async def edit_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     
-    if query.data.startswith("edit_stat_"):
-        stat_name = query.data.replace("edit_stat_", "")
+    if query.data.startswith("edit_"):
+        stat_name = query.data.replace("edit_", "")
         context.user_data['edit_stat'] = stat_name
         await query.message.reply_text(
             f"✏️ *{stat_name}*\n\n"
             f"Текущее значение: {get_user_stat(query.from_user.id, stat_name)} кг\n\n"
-            "Введи новое значение (кг):",
+            "Введи новое значение (кг):\nИли /cancel для отмены",
             parse_mode='Markdown'
         )
         return WAITING_FOR_EDIT_WEIGHT
-    elif query.data == "add_stat":
-        await query.message.reply_text(
-            "➕ *Добавить свой показатель*\n\n"
-            "Введи название показателя\n"
-            "Например: `Становая тяга`\n\n"
-            "Для отмены введи /cancel",
-            parse_mode='Markdown'
-        )
-        return WAITING_FOR_CUSTOM_EXERCISE_NAME
-    elif query.data == "back_to_stats":
+    elif query.data == "back_stats":
         await query.message.reply_text("🔙 Назад", reply_markup=get_stats_keyboard())
         return ConversationHandler.END
 
@@ -426,14 +400,16 @@ async def edit_stat_value(update: Update, context: CallbackContext):
     try:
         new_value = float(update.message.text)
         user_id = get_user_id(update)
-        stat_name = context.user_data['edit_stat']
-        save_user_stat(user_id, stat_name, new_value)
-        
-        await update.message.reply_text(
-            f"✅ *{stat_name}* обновлён! Новое значение: {new_value} кг",
-            parse_mode='Markdown',
-            reply_markup=get_stats_keyboard()
-        )
+        stat_name = context.user_data.get('edit_stat')
+        if stat_name:
+            save_user_stat(user_id, stat_name, new_value)
+            await update.message.reply_text(
+                f"✅ *{stat_name}* обновлён! Новое значение: {new_value} кг",
+                parse_mode='Markdown',
+                reply_markup=get_stats_keyboard()
+            )
+        else:
+            await update.message.reply_text("❌ Ошибка", reply_markup=get_main_keyboard())
         return ConversationHandler.END
     except:
         await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
@@ -443,7 +419,7 @@ async def add_custom_stat(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "➕ *Добавить свой показатель*\n\n"
         "Введи название показателя\n"
-        "Например: `Становая тяга` или `Тяга штанги`\n\n"
+        "Например: `Становая тяга`\n\n"
         "Для отмены введи /cancel",
         parse_mode='Markdown'
     )
@@ -504,8 +480,7 @@ async def show_goals(update: Update, context: CallbackContext):
         else:
             text += f"• *{stat_name}*: {value} кг → цель не установлена\n"
     
-    text += "\nЧтобы установить цель, нажми *🎯 Мои цели* и выбери показатель."
-    
+    text += "\n\nЧтобы установить цель, нажми *🎯 Мои цели* и выбери показатель."
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
 
 async def set_goal_select(update: Update, context: CallbackContext):
@@ -519,8 +494,8 @@ async def set_goal_select(update: Update, context: CallbackContext):
     text = "🎯 *Для какого показателя установить цель?*\n\n"
     buttons = []
     for stat_name, value, date in stats:
-        buttons.append([InlineKeyboardButton(f"🎯 {stat_name} (сейчас {value} кг)", callback_data=f"set_goal_{stat_name}")])
-    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+        buttons.append([InlineKeyboardButton(f"{stat_name} (сейчас {value} кг)", callback_data=f"goal_{stat_name}")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_goals")])
     
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
     return WAITING_FOR_TARGET_SELECT
@@ -529,8 +504,8 @@ async def goal_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     
-    if query.data.startswith("set_goal_"):
-        stat_name = query.data.replace("set_goal_", "")
+    if query.data.startswith("goal_"):
+        stat_name = query.data.replace("goal_", "")
         context.user_data['goal_stat'] = stat_name
         await query.message.reply_text(
             f"🎯 *{stat_name}*\n\n"
@@ -541,8 +516,8 @@ async def goal_callback(update: Update, context: CallbackContext):
             parse_mode='Markdown'
         )
         return WAITING_FOR_TARGET_VALUE
-    elif query.data == "back_to_menu":
-        await query.message.reply_text("🔙 Возврат", reply_markup=get_main_keyboard())
+    elif query.data == "back_goals":
+        await query.message.reply_text("🔙 Назад", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
 async def set_goal_value(update: Update, context: CallbackContext):
@@ -552,7 +527,7 @@ async def set_goal_value(update: Update, context: CallbackContext):
         stat_name = context.user_data.get('goal_stat')
         
         if not stat_name:
-            await update.message.reply_text("❌ Что-то пошло не так. Попробуй снова через /goals", reply_markup=get_main_keyboard())
+            await update.message.reply_text("❌ Что-то пошло не так. Попробуй снова /goals", reply_markup=get_main_keyboard())
             return ConversationHandler.END
         
         set_goal(user_id, stat_name, target)
@@ -571,7 +546,7 @@ async def set_goal_value(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
         return WAITING_FOR_TARGET_VALUE
     except Exception as e:
-        await update.message.reply_text("❌ Ошибка. Попробуй ещё раз", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"❌ Ошибка: {e}", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
 # ==================== ПРОГРЕСС ====================
@@ -611,7 +586,7 @@ async def show_chart_select(update: Update, context: CallbackContext):
     buttons = []
     for stat_name, value, date in stats:
         buttons.append([InlineKeyboardButton(f"📈 {stat_name}", callback_data=f"chart_{stat_name}")])
-    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back_chart")])
     
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons))
     return WAITING_FOR_PROGRESS_SELECT
@@ -629,8 +604,8 @@ async def chart_callback(update: Update, context: CallbackContext):
                 await query.message.reply_photo(f, caption=f"📈 Динамика: {stat_name}", reply_markup=get_main_keyboard())
         else:
             await query.message.reply_text(f"❌ Недостаточно данных для {stat_name}", reply_markup=get_main_keyboard())
-    elif query.data == "back_to_menu":
-        await query.message.reply_text("🔙 Возврат", reply_markup=get_main_keyboard())
+    elif query.data == "back_chart":
+        await query.message.reply_text("🔙 Назад", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 # ==================== ПРОГРАММА ТРЕНИРОВОК ====================
@@ -840,12 +815,9 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    # ConversationHandler для добавления упражнения в программу
+    # ConversationHandler для добавления упражнения
     add_exercise_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add_exercise", add_exercise_start),
-            MessageHandler(filters.Regex("^➕ Добавить упражнение$"), add_exercise_start)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^➕ Добавить упражнение$"), add_exercise_start)],
         states={
             WAITING_FOR_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_name)],
             WAITING_FOR_EXERCISE_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_exercise_details)],
@@ -855,11 +827,7 @@ def main():
     
     # ConversationHandler для записи тренировки
     log_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("log", start_log),
-            MessageHandler(filters.Regex("^📝 Записать тренировку$"), start_log),
-            MessageHandler(filters.Regex("^📝 Записать ещё$"), start_log)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^📝 Записать тренировку$"), start_log)],
         states={
             WAITING_FOR_LOG: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_log)],
         },
@@ -868,10 +836,7 @@ def main():
     
     # ConversationHandler для добавления своего показателя
     add_stat_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add_stat", add_custom_stat),
-            MessageHandler(filters.Regex("^➕ Добавить свой показатель$"), add_custom_stat)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^➕ Добавить свой показатель$"), add_custom_stat)],
         states={
             WAITING_FOR_CUSTOM_EXERCISE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_stat_name)],
             WAITING_FOR_CUSTOM_EXERCISE_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_stat_value)],
@@ -881,26 +846,17 @@ def main():
     
     # ConversationHandler для установки цели
     set_goal_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("set_goal", set_goal_select),
-            MessageHandler(filters.Regex("^🎯 Мои цели$"), set_goal_select)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^🎯 Мои цели$"), set_goal_select)],
         states={
             WAITING_FOR_TARGET_SELECT: [CallbackQueryHandler(goal_callback)],
-            WAITING_FOR_TARGET_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, set_goal_value),
-                CommandHandler("cancel", cancel)
-            ],
+            WAITING_FOR_TARGET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_goal_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
     # ConversationHandler для графика
     chart_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("chart", show_chart_select),
-            MessageHandler(filters.Regex("^📈 График$"), show_chart_select)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^📈 График$"), show_chart_select)],
         states={
             WAITING_FOR_PROGRESS_SELECT: [CallbackQueryHandler(chart_callback)],
         },
@@ -909,11 +865,9 @@ def main():
     
     # ConversationHandler для редактирования показателей
     edit_stat_conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("^✏️ Редактировать показатель$"), edit_stat_select)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^✏️ Редактировать показатель$"), edit_stat_select)],
         states={
-            WAITING_FOR_EDIT_SELECT: [CallbackQueryHandler(edit_stat_callback)],
+            WAITING_FOR_EDIT_SELECT: [CallbackQueryHandler(edit_callback)],
             WAITING_FOR_EDIT_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_stat_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
