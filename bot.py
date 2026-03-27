@@ -164,13 +164,6 @@ def get_user_stat(user_id, stat_name):
     conn.close()
     return result[0] if result else None
 
-def delete_user_stat(user_id, stat_name):
-    conn = sqlite3.connect('training.db')
-    c = conn.cursor()
-    c.execute("DELETE FROM user_stats WHERE user_id = ? AND stat_name = ?", (user_id, stat_name))
-    conn.commit()
-    conn.close()
-
 def get_program(user_id):
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
@@ -187,31 +180,6 @@ def add_exercise(user_id, name, weight, reps, sets):
     order_num = max_order + 1
     c.execute("INSERT INTO program (user_id, exercise_name, weight, reps, sets, order_num) VALUES (?, ?, ?, ?, ?, ?)",
               (user_id, name, weight, reps, sets, order_num))
-    conn.commit()
-    conn.close()
-
-def update_exercise_weight(user_id, order_num, new_weight):
-    conn = sqlite3.connect('training.db')
-    c = conn.cursor()
-    c.execute("UPDATE program SET weight = ? WHERE user_id = ? AND order_num = ?", (new_weight, user_id, order_num))
-    conn.commit()
-    conn.close()
-
-def update_exercise_reps_sets(user_id, order_num, new_reps, new_sets):
-    conn = sqlite3.connect('training.db')
-    c = conn.cursor()
-    c.execute("UPDATE program SET reps = ?, sets = ? WHERE user_id = ? AND order_num = ?", (new_reps, new_sets, user_id, order_num))
-    conn.commit()
-    conn.close()
-
-def delete_exercise(user_id, order_num):
-    conn = sqlite3.connect('training.db')
-    c = conn.cursor()
-    c.execute("DELETE FROM program WHERE user_id = ? AND order_num = ?", (user_id, order_num))
-    c.execute("SELECT id, order_num FROM program WHERE user_id = ? ORDER BY order_num", (user_id,))
-    exercises = c.fetchall()
-    for i, (id_, old_order) in enumerate(exercises):
-        c.execute("UPDATE program SET order_num = ? WHERE id = ?", (i + 1, id_))
     conn.commit()
     conn.close()
 
@@ -290,6 +258,20 @@ def get_last_workout(user_id, exercise_name):
     conn.close()
     return result if result else None
 
+# ==================== ФУНКЦИЯ START ====================
+async def start(update: Update, context: CallbackContext):
+    user_id = get_user_id(update)
+    
+    if is_onboarded(user_id):
+        await update.message.reply_text(
+            "🏋️‍♂️ *С возвращением!*\n\n"
+            "👇 Нажми на кнопку:",
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        await onboard_user(update, context)
+
 # ==================== АНКЕТА ====================
 async def onboard_user(update: Update, context: CallbackContext):
     await update.message.reply_text(
@@ -305,7 +287,6 @@ async def get_bodyweight(update: Update, context: CallbackContext):
         bodyweight = float(update.message.text)
         user_id = get_user_id(update)
         save_user_stat(user_id, "Вес тела", bodyweight)
-        context.user_data['onboard'] = {}
         await update.message.reply_text(
             f"✅ Вес тела: {bodyweight} кг\n\n"
             "Теперь укажи свой *жим лёжа (на раз, кг)*:",
@@ -734,13 +715,13 @@ async def handle_log(update: Update, context: CallbackContext):
             return WAITING_FOR_LOG
         
         # Если название из нескольких слов
-        exercise_name = parts[0]
         if len(parts) > 4:
             exercise_name = " ".join(parts[:-3])
             weight = float(parts[-3])
             reps = int(parts[-2])
             sets = int(parts[-1])
         else:
+            exercise_name = parts[0]
             weight = float(parts[1])
             reps = int(parts[2])
             sets = int(parts[3])
