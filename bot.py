@@ -4,29 +4,30 @@ from datetime import datetime
 import logging
 import os
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters, ConversationHandler
 from telegram.request import HTTPXRequest
-
 
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
 
 if not TOKEN:
-    print("❌ Ошибка: не найден токен. Установи переменную окружения TELEGRAM_TOKEN")
+    print("❌ Ошибка: не найден токен")
     exit()
 
 USE_PROXY = False
-PROXY_URL = "socks5://127.0.0.1:9050"
 
 if USE_PROXY:
-    request = HTTPXRequest(proxy_url=PROXY_URL)
+    request = HTTPXRequest(proxy_url="socks5://127.0.0.1:9050")
 else:
     request = HTTPXRequest()
-
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
+# Состояния для ConversationHandler
+WAITING_FOR_LOG = 1
+WAITING_FOR_TARGET = 2
 
+# ==================== КНОПКИ ====================
 def get_main_keyboard():
     keyboard = [
         [KeyboardButton("🏋️ Программа"), KeyboardButton("📊 Прогресс")],
@@ -42,7 +43,7 @@ def get_after_log_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-
+# ==================== БАЗА ДАННЫХ ====================
 def init_db():
     conn = sqlite3.connect('training.db')
     c = conn.cursor()
@@ -132,83 +133,101 @@ def get_last_workout():
     conn.close()
     return result if result else None
 
-
+# ==================== КОМАНДЫ ====================
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(
-        "🏋️‍♂️ *Твой силовой тренер*\n\n👇 Нажми на кнопку, чтобы выбрать действие:",
+        "🏋️‍♂️ *Твой силовой тренер*\n\n👇 Нажми на кнопку:",
         parse_mode='Markdown',
         reply_markup=get_main_keyboard()
     )
 
 async def program(update: Update, context: CallbackContext):
     await update.message.reply_text(
-        "🏋️‍♂️ *Программа на субботу:*\n\n"
-        "1️⃣ Жим лёжа — 65 кг × 5×5\n"
-        "2️⃣ Тяга гантели — 24–26 кг × 5×8–10\n"
-        "3️⃣ Гиперэкстензия — 3×12–15\n"
-        "4️⃣ Вис на турнике — 2×30–40 сек",
+        "🏋️‍♂️ *Программа:*\n1️⃣ Жим — 65 кг × 5×5\n2️⃣ Тяга гантели — 24–26 кг × 5×8–10\n3️⃣ Гиперэкстензия — 3×12–15\n4️⃣ Вис на турнике — 2×30–40 сек",
         parse_mode='Markdown',
         reply_markup=get_main_keyboard()
     )
 
-async def log_workout(update: Update, context: CallbackContext):
-    if update.message.text == "📝 Записать тренировку":
-        context.user_data['waiting_for_log'] = True
+async def start_log(update: Update, context: CallbackContext):
+    await update.message.reply_text("📝 *Введи:* `65 5 5`\n(вес, повторы, подходы)", parse_mode='Markdown')
+    return WAITING_FOR_LOG
+
+async def handle_log(update: Update, context: CallbackContext):
+    try:
+        parts = update.message.text.split()
+        if len(parts) != 3:
+            await update.message.reply_text("❌ Нужно три числа. Пример: `65 5 5`", parse_mode='Markdown')
+            return WAITING_FOR_LOG
+        
+        weight = float(parts[0])
+        reps = int(parts[1])
+        sets = int(parts[2])
+        
+        save_workout(weight, reps, sets)
+        one_rm = calculate_1rm(weight, reps, sets)
+        
+        goal = get_goal()
+        goal_text = ""
+        if goal:
+            remaining = goal - one_rm
+            if remaining > 0:
+                goal_text = f"\n🎯 До цели {goal} кг осталось: {remaining:.1f} кг"
+            else:
+                goal_text = f"\n🎉 Поздравляю! Ты достиг цели {goal} кг!"
+        
         await update.message.reply_text(
-            "📝 *Введи данные в формате:*\n`65 5 5`\n(вес, повторы, подходы)",
+            f"✅ *Записано:* {weight} кг × {sets}×{reps}\n📈 1ПМ = {one_rm} кг{goal_text}",
             parse_mode='Markdown',
-            reply_markup=get_main_keyboard()
+            reply_markup=get_after_log_keyboard()
         )
-        return
-    
-    if context.user_data.get('waiting_for_log'):
-        try:
-            parts = update.message.text.split()
-            if len(parts) != 3:
-                raise ValueError
-            weight = float(parts[0])
-            reps = int(parts[1])
-            sets = int(parts[2])
-            
-            save_workout(weight, reps, sets)
-            one_rm = calculate_1rm(weight, reps, sets)
-            
-            goal = get_goal()
-            goal_text = ""
-            if goal:
-                remaining = goal - one_rm
-                if remaining > 0:
-                    goal_text = f"\n🎯 До цели {goal} кг осталось: {remaining:.1f} кг"
-                else:
-                    goal_text = f"\n🎉 Поздравляю! Ты достиг цели {goal} кг!"
-            
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Ошибка. Пример: `65 5 5`", parse_mode='Markdown')
+        return WAITING_FOR_LOG
+
+async def cancel_log(update: Update, context: CallbackContext):
+    await update.message.reply_text("❌ Запись отменена", reply_markup=get_main_keyboard())
+    return ConversationHandler.END
+
+async def start_target(update: Update, context: CallbackContext):
+    await update.message.reply_text("🎯 *Введи цель (кг):*", parse_mode='Markdown')
+    return WAITING_FOR_TARGET
+
+async def handle_target(update: Update, context: CallbackContext):
+    try:
+        target_weight = float(update.message.text)
+        set_goal(target_weight)
+        last = get_last_workout()
+        if last:
+            one_rm = calculate_1rm(last[0], last[1], last[2])
+            remaining = target_weight - one_rm
             await update.message.reply_text(
-                f"✅ *Записано:* {weight} кг × {sets}×{reps}\n"
-                f"📈 Расчётный максимум (1ПМ): *{one_rm} кг*{goal_text}",
-                parse_mode='Markdown',
-                reply_markup=get_after_log_keyboard()
-            )
-            context.user_data['waiting_for_log'] = False
-        except:
-            await update.message.reply_text(
-                "❌ *Ошибка формата*\nИспользуй: `65 5 5`",
+                f"🎯 *Цель:* {target_weight} кг\n📊 Текущий 1ПМ: {one_rm} кг\n💪 Осталось: {remaining:.1f} кг",
                 parse_mode='Markdown',
                 reply_markup=get_main_keyboard()
             )
-        return
+        else:
+            await update.message.reply_text(f"🎯 Цель {target_weight} кг установлена!", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Введи число", parse_mode='Markdown')
+        return WAITING_FOR_TARGET
 
 async def progress_command(update: Update, context: CallbackContext):
     data = get_workouts()
     if not data:
         await update.message.reply_text("📭 Нет записанных тренировок", reply_markup=get_main_keyboard())
         return
+    
     text = "📊 *Твой прогресс:*\n\n"
     for date, weight, reps, sets in data[-10:]:
         one_rm = calculate_1rm(weight, reps, sets)
         text += f"📅 {date[:10]}: {weight} кг × {sets}×{reps} → 1ПМ = {one_rm} кг\n"
+    
     if len(data) > 1:
         diff = data[-1][1] - data[0][1]
         text += f"\n📈 *Общий прогресс:* +{diff} кг за {len(data)} тренировок"
+    
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
 
 async def chart_command(update: Update, context: CallbackContext):
@@ -220,44 +239,11 @@ async def chart_command(update: Update, context: CallbackContext):
     else:
         await update.message.reply_text("❌ Недостаточно данных", reply_markup=get_main_keyboard())
 
-async def target_command(update: Update, context: CallbackContext):
-    if update.message.text == "🎯 Цель":
-        context.user_data['waiting_for_target'] = True
-        await update.message.reply_text(
-            "🎯 *Введи свою цель в килограммах:*\nНапример: `100`",
-            parse_mode='Markdown',
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    if context.user_data.get('waiting_for_target'):
-        try:
-            target_weight = float(update.message.text)
-            set_goal(target_weight)
-            last = get_last_workout()
-            if last:
-                one_rm = calculate_1rm(last[0], last[1], last[2])
-                remaining = target_weight - one_rm
-                await update.message.reply_text(
-                    f"🎯 *Цель:* {target_weight} кг\n"
-                    f"📊 Текущий 1ПМ: {one_rm} кг\n"
-                    f"💪 Осталось: {remaining:.1f} кг",
-                    parse_mode='Markdown',
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                await update.message.reply_text(f"🎯 Цель {target_weight} кг установлена!", parse_mode='Markdown', reply_markup=get_main_keyboard())
-            context.user_data['waiting_for_target'] = False
-        except:
-            await update.message.reply_text("❌ Введи число", parse_mode='Markdown', reply_markup=get_main_keyboard())
-        return
-
 async def next_weight_command(update: Update, context: CallbackContext):
     last = get_last_workout()
     if last:
-        next_w = last[0] + 2.5
         await update.message.reply_text(
-            f"📈 *Следующий вес:* {next_w} кг × {last[2]}×{last[1]}",
+            f"📈 *Следующий вес:* {last[0] + 2.5} кг × {last[2]}×{last[1]}",
             parse_mode='Markdown',
             reply_markup=get_main_keyboard()
         )
@@ -267,17 +253,21 @@ async def next_weight_command(update: Update, context: CallbackContext):
 async def help_command(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "🏋️‍♂️ *Помощь*\n\n"
+        "📋 *Команды:*\n"
         "/log вес повторы подходы — записать\n"
         "/progress — прогресс\n"
         "/chart — график\n"
         "/target вес — цель\n"
-        "/next — следующий вес",
+        "/next — следующий вес\n\n"
+        "👇 Или нажимай на кнопки!",
         parse_mode='Markdown',
         reply_markup=get_main_keyboard()
     )
 
+# ==================== ОБРАБОТКА ТЕКСТОВЫХ КНОПОК ====================
 async def handle_text(update: Update, context: CallbackContext):
     text = update.message.text
+    
     if text == "🏋️ Программа":
         await program(update, context)
     elif text == "📊 Прогресс":
@@ -285,35 +275,59 @@ async def handle_text(update: Update, context: CallbackContext):
     elif text == "📈 График":
         await chart_command(update, context)
     elif text == "🎯 Цель":
-        await target_command(update, context)
+        await start_target(update, context)
     elif text == "📝 Записать тренировку":
-        await log_workout(update, context)
+        await start_log(update, context)
     elif text == "📝 Записать ещё":
-        context.user_data['waiting_for_log'] = True
-        await update.message.reply_text("📝 *Введи данные:*\n`65 5 5`", parse_mode='Markdown', reply_markup=get_main_keyboard())
+        await start_log(update, context)
     elif text == "➕ Следующий вес":
         await next_weight_command(update, context)
     elif text == "ℹ️ Помощь":
         await help_command(update, context)
-
-
-def main():
-    if USE_PROXY:
-        app = Application.builder().token(TOKEN).request(request).build()
     else:
-        app = Application.builder().token(TOKEN).build()
+        # Если бот не в режиме ожидания — просто игнорируем
+        pass
+
+# ==================== ЗАПУСК ====================
+def main():
+    app = Application.builder().token(TOKEN).request(request).build()
+    
+    # ConversationHandler для записи тренировки
+    log_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("log", start_log),
+            MessageHandler(filters.Regex("^📝 Записать тренировку$"), start_log),
+            MessageHandler(filters.Regex("^📝 Записать ещё$"), start_log)
+        ],
+        states={
+            WAITING_FOR_LOG: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_log)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_log)],
+    )
+    
+    # ConversationHandler для цели
+    target_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("target", start_target),
+            MessageHandler(filters.Regex("^🎯 Цель$"), start_target)
+        ],
+        states={
+            WAITING_FOR_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_target)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_log)],
+    )
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("program", program))
-    app.add_handler(CommandHandler("log", log_workout))
+    app.add_handler(log_conv)
+    app.add_handler(target_conv)
     app.add_handler(CommandHandler("progress", progress_command))
     app.add_handler(CommandHandler("chart", chart_command))
-    app.add_handler(CommandHandler("target", target_command))
     app.add_handler(CommandHandler("next", next_weight_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    print("🤖 Бот запущен!")
+    print("🤖 Бот запущен! Напиши /start в Телеграме")
     app.run_polling()
 
 if __name__ == '__main__':
