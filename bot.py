@@ -112,10 +112,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-import os
-if os.path.exists('training.db'):
-    os.remove('training.db')
-    print("Старая база удалена")
 init_db()
 
 def get_user_id(update):
