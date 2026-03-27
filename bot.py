@@ -504,7 +504,7 @@ async def show_goals(update: Update, context: CallbackContext):
         else:
             text += f"• *{stat_name}*: {value} кг → цель не установлена\n"
     
-    text += "\nУстановить цель: нажми *🎯 Мои цели* снова"
+    text += "\nЧтобы установить цель, нажми *🎯 Мои цели* и выбери показатель."
     
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
 
@@ -514,7 +514,7 @@ async def set_goal_select(update: Update, context: CallbackContext):
     
     if not stats:
         await update.message.reply_text("📭 Нет показателей", reply_markup=get_main_keyboard())
-        return
+        return ConversationHandler.END
     
     text = "🎯 *Для какого показателя установить цель?*\n\n"
     buttons = []
@@ -536,7 +536,8 @@ async def goal_callback(update: Update, context: CallbackContext):
             f"🎯 *{stat_name}*\n\n"
             f"Текущее значение: {get_user_stat(query.from_user.id, stat_name)} кг\n\n"
             "Введи целевую цифру (кг):\n"
-            "Например: `100`",
+            "Например: `100`\n\n"
+            "Или нажми /cancel для отмены",
             parse_mode='Markdown'
         )
         return WAITING_FOR_TARGET_VALUE
@@ -548,10 +549,15 @@ async def set_goal_value(update: Update, context: CallbackContext):
     try:
         target = float(update.message.text)
         user_id = get_user_id(update)
-        stat_name = context.user_data['goal_stat']
-        set_goal(user_id, stat_name, target)
+        stat_name = context.user_data.get('goal_stat')
         
+        if not stat_name:
+            await update.message.reply_text("❌ Что-то пошло не так. Попробуй снова через /goals", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+        
+        set_goal(user_id, stat_name, target)
         current = get_user_stat(user_id, stat_name)
+        
         await update.message.reply_text(
             f"✅ *Цель установлена!*\n\n"
             f"• {stat_name}: {current} кг → {target} кг\n"
@@ -559,10 +565,14 @@ async def set_goal_value(update: Update, context: CallbackContext):
             parse_mode='Markdown',
             reply_markup=get_main_keyboard()
         )
+        context.user_data.pop('goal_stat', None)
         return ConversationHandler.END
-    except:
+    except ValueError:
         await update.message.reply_text("❌ Введи число, например: `100`", parse_mode='Markdown')
         return WAITING_FOR_TARGET_VALUE
+    except Exception as e:
+        await update.message.reply_text("❌ Ошибка. Попробуй ещё раз", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
 
 # ==================== ПРОГРЕСС ====================
 async def show_progress(update: Update, context: CallbackContext):
@@ -621,6 +631,7 @@ async def chart_callback(update: Update, context: CallbackContext):
             await query.message.reply_text(f"❌ Недостаточно данных для {stat_name}", reply_markup=get_main_keyboard())
     elif query.data == "back_to_menu":
         await query.message.reply_text("🔙 Возврат", reply_markup=get_main_keyboard())
+    return ConversationHandler.END
 
 # ==================== ПРОГРАММА ТРЕНИРОВОК ====================
 async def show_program(update: Update, context: CallbackContext):
@@ -714,7 +725,6 @@ async def handle_log(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Нужно 4 параметра. Пример: `Жим лёжа 65 5 5`", parse_mode='Markdown')
             return WAITING_FOR_LOG
         
-        # Если название из нескольких слов
         if len(parts) > 4:
             exercise_name = " ".join(parts[:-3])
             weight = float(parts[-3])
@@ -730,7 +740,6 @@ async def handle_log(update: Update, context: CallbackContext):
         save_workout(user_id, exercise_name, weight, reps, sets)
         one_rm = calculate_1rm(weight, reps, sets)
         
-        # Обновляем показатель в статистике
         current = get_user_stat(user_id, exercise_name)
         if not current or weight > current:
             save_user_stat(user_id, exercise_name, weight)
@@ -878,7 +887,10 @@ def main():
         ],
         states={
             WAITING_FOR_TARGET_SELECT: [CallbackQueryHandler(goal_callback)],
-            WAITING_FOR_TARGET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_goal_value)],
+            WAITING_FOR_TARGET_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, set_goal_value),
+                CommandHandler("cancel", cancel)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
