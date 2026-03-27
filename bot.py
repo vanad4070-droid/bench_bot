@@ -111,7 +111,7 @@ def init_db():
                   onboarded_date TEXT)''')
     conn.commit()
     conn.close()
-ВРЕМЕННО: удалить старую базу
+
 import os
 if os.path.exists('training.db'):
     os.remove('training.db')
